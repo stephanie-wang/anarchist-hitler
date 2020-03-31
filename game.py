@@ -13,6 +13,11 @@ FASCIST = "fascist"
 HITLER = "hitler"
 
 
+# TODO: Shuffle remaining cards with the discarded pile.
+# TODO: Veto power. Discard 3 without enacting a policy.
+# TODO: Investigate loyalty. Check loyalty of one other player.
+# TODO: Set number of fascists according to number of players.
+
 class Game:
     def __init__(self, seed, num_players, player_index, history=None):
         self.seed = seed
