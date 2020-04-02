@@ -1,31 +1,38 @@
 import random
 import hashlib
+import sys
 
 import words
 
 
 NUM_LIBERAL_POLICIES = 6
 NUM_FASCIST_POLICIES = 11
-NUM_FASCISTS = 1
+NUM_FASCISTS = {
+    5: 1,
+    6: 1,
+    7: 2,
+    8: 2,
+    9: 3,
+    10: 3,
+}
 
 LIBERAL = "liberal"
 FASCIST = "fascist"
 HITLER = "hitler"
 
 
-# TODO: Shuffle remaining cards with the discarded pile.
-# TODO: Veto power. Discard 3 without enacting a policy.
-# TODO: Investigate loyalty. Check loyalty of one other player.
-# TODO: Set number of fascists according to number of players.
-
 class Game:
     def __init__(self, seed, num_players, player_index, history=None):
+        assert num_players >= min(NUM_FASCISTS), "Minimum number of players is 5"
+        assert num_players <= max(NUM_FASCISTS), "Maximum number of players is 10"
+        assert player_index >= 1 and player_index <= num_players, "Player index must be between 1 and the total number of players"
+
         self.seed = seed
         self.num_players = num_players
         self.player_index = player_index
 
         random.seed(seed)
-        self._set_role(num_players, player_index)
+        self._set_roles(num_players)
 
         self.discarded = list(range(NUM_LIBERAL_POLICIES + NUM_FASCIST_POLICIES))
         self.policy_mapping = {}
@@ -40,21 +47,27 @@ class Game:
             method = getattr(Game, policy)
             method(self, *args)
 
-    def _set_role(self, num_players, player_index):
-        num_liberals = num_players - NUM_FASCISTS - 1
-        roles = [LIBERAL] * num_liberals + [FASCIST] * NUM_FASCISTS + [HITLER]
-        random.shuffle(roles)
-        self.role = roles[player_index]
+    def _set_roles(self, num_players):
+        num_fascists = NUM_FASCISTS[num_players]
+        num_liberals = num_players - num_fascists - 1
+        self.roles = [(LIBERAL, LIBERAL)] * num_liberals + [(FASCIST, FASCIST)] * num_fascists + [(FASCIST, HITLER)]
+        random.shuffle(self.roles)
 
     def _shuffle_deck(self):
+        # Shuffle the remaining cards in the deck into the discarded pile.
+        while self.deck:
+            index = self.deck.pop(0)
+            self.discarded.append(index)
+            self.policy_mapping.pop(index)
+        assert len(self.policy_mapping) == 0, self.policy_mapping
+
+        # Generate a random permutation from index to policy.
         policies = [LIBERAL] * NUM_LIBERAL_POLICIES + [FASCIST] * NUM_FASCIST_POLICIES
-        for policy in self.policy_mapping.values():
-            policies.remove(policy)
         random.shuffle(policies)
-        random.shuffle(self.discarded)
         for index, policy in zip(self.discarded, policies):
             self.policy_mapping[index] = policy
-
+        # Shuffle the deck.
+        random.shuffle(self.discarded)
         while self.discarded:
             self.deck.append(self.discarded.pop(0))
 
@@ -71,7 +84,15 @@ class Game:
 
     # Read-only actions that can be taken during the game.
     def get_role(self):
-        return self.role
+        # Zero-index the players.
+        return "{} : {}".format(self.player_index, self.roles[self.player_index - 1])
+
+    def investigate(self, player_index):
+        player_index = int(player_index)
+        assert player_index != self.player_index, "You cannot investigate yourself"
+        assert player_index >= 1 and player_index <= self.num_players, "Player index must be between 1 and the total number of players"
+        # Zero-index the players.
+        return "{} : {}".format(player_index, self.roles[player_index - 1][0])
 
     def look(self, *indices):
         policies = []
@@ -87,6 +108,28 @@ class Game:
     def get_enacted_policies(self):
         return "Liberal policies: {}, Fascist policies: {}".format(self.num_enacted_liberals, self.num_enacted_fascists)
 
+    def _enact(self, discarded, index_to_enact=None):
+        # Enact the policy.
+        if index_to_enact is not None:
+            policy = self.policy_mapping[index_to_enact]
+            if policy == LIBERAL:
+                self.num_enacted_liberals += 1
+            else:
+                self.num_enacted_fascists += 1
+
+        # Discard the remaining cards without revealing them.
+        for policy_index in discarded:
+            self.deck.pop(0)
+            self.policy_mapping.pop(policy_index)
+        if index_to_enact is not None:
+            self.deck.pop(0)
+            policy = self.policy_mapping.pop(index_to_enact)
+        self.discarded += discarded
+        if len(self.deck) < 3:
+            self._shuffle_deck()
+
+        return "\n".join([self.get_enacted_policies(), self._checksum()])
+
     # State transitions that can be taken during the game.
     def enact(self, policy):
         policies = self.deck[:3]
@@ -95,37 +138,17 @@ class Game:
             if self.policy_mapping[policy_index] == policy:
                 index = i
         assert index != -1, "Cannot enact a policy that wasn't in the top 3 cards. Try 'undo'?"
-
-        for policy_index in policies:
-            self.policy_mapping.pop(policy_index)
-        policies.pop(index)
-
-        if policy == LIBERAL:
-            self.num_enacted_liberals += 1
-        else:
-            self.num_enacted_fascists += 1
-
-        self.deck = self.deck[3:]
-        self.discarded += policies
-        if len(self.deck) < 3:
-            self._shuffle_deck()
+        policy_index = policies.pop(index)
         self.log.append(("enact", (policy, )))
-        return "\n".join([self.get_enacted_policies(), self._checksum()])
+        return self._enact(policies, index_to_enact=policy_index)
 
     def reveal(self):
-        policy_index = self.deck.pop(0)
-        policy = self.policy_mapping.pop(policy_index)
-
-        if policy == LIBERAL:
-            self.num_enacted_liberals += 1
-        else:
-            self.num_enacted_fascists += 1
-
-        self.discarded.append(policy_index)
-        if len(self.deck) < 3:
-            self._shuffle_deck()
         self.log.append(("reveal", ()))
-        return "\n".join([self.get_enacted_policies(), self._checksum()])
+        return self._enact([], index_to_enact=self.deck[0])
+
+    def veto(self):
+        self.log.append(("veto", ()))
+        return self._enact(self.deck[:3])
 
     def undo(self):
         assert len(self.log) > 0, "No actions to undo"
@@ -134,15 +157,18 @@ class Game:
         self.__init__(self.seed, self.num_players, self.player_index, log)
         return self._checksum()
 
+
 ACTIONS = {
     # Read-only actions.
     "role": (Game.get_role, "Get your role"),
     "draw": (Game.draw, "Look at the top 3 cards of the deck"),
     "look": (Game.look, "Look at the value of the given card(s). This can be any one of the top 3 cards. Example: look 8 10"),
     "check": (Game.get_enacted_policies, "Check which policies have been enacted so far"),
+    "investigate": (Game.investigate, "Check one other player's party membership"),
     # Actions that affect game state.
     "enact": (Game.enact, "Enact a policy"),
     "reveal": (Game.reveal, "Enact the policy at the top of the deck"),
+    "veto": (Game.veto, "Veto the current legislation"),
     "undo": (Game.undo, "Undo the last action played"),
 }
 
@@ -159,7 +185,11 @@ def execute_command(game, raw_command):
 
 
 def main(seed, num_players, player_index):
-    game = Game(seed, num_players, player_index)
+    try:
+        game = Game(seed, num_players, player_index)
+    except AssertionError as e:
+        print(e)
+        sys.exit()
     print("Starting", game._checksum())
     while True:
         command = input(">> ")
@@ -191,4 +221,4 @@ if __name__ == '__main__':
             help="Your player index. This must be unique for each player and should be a number between 1 and the total number of players.")
 
     args = parser.parse_args()
-    main(args.seed, args.num_players, args.player_index - 1)
+    main(args.seed, args.num_players, args.player_index)
